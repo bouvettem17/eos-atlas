@@ -1,13 +1,24 @@
 import React, { useMemo, useState } from "react";
 import { FEATURES, PHENOTYPES, STRATEGIES, classify, strategyFromPlan, cell, profile } from "./model.js";
 
-const EXAMPLE = { age_at_surgery: "5.2", bmi: "15.4", asa: "2", n_comorbidities: "1", major_cobb: "74",
+const EXAMPLE = { age_at_surgery: "5.2", height_ft: "3", height_in: "7", weight_lb: "40.5", asa: "2", n_comorbidities: "1", major_cobb: "74",
   kyphosis: "52", coronal_balance: "16", sagittal_balance: "18", ambulatory_ord: "1" };
-const EMPTY = Object.fromEntries(FEATURES.map((f) => [f.key, ""]));
+const EMPTY = { ...Object.fromEntries(FEATURES.map((f) => [f.key, ""])), height_ft: "", height_in: "", weight_lb: "" };
+
+// BMI (kg/m²) from height in feet + inches and weight in pounds; null until both are valid.
+function bmiFrom(v) {
+  const ft = v.height_ft === "" ? null : +v.height_ft;
+  const inch = v.height_in === "" ? 0 : +v.height_in;
+  const lb = v.weight_lb === "" ? null : +v.weight_lb;
+  if (ft == null || lb == null || Number.isNaN(ft) || Number.isNaN(inch) || Number.isNaN(lb)) return null;
+  const totalIn = ft * 12 + inch;
+  if (totalIn < 12 || lb <= 0) return null;
+  return (703 * lb) / (totalIn * totalIn);
+}
 const byKey = Object.fromEntries(FEATURES.map((f) => [f.key, f]));
 
 const GROUPS = [
-  { title: "Patient", keys: ["age_at_surgery", "bmi", "asa", "n_comorbidities", "ambulatory_ord"] },
+  { title: "Patient", keys: ["age_at_surgery", "height", "weight", "asa", "n_comorbidities", "ambulatory_ord"] },
   { title: "Radiographs", keys: ["major_cobb", "kyphosis", "coronal_balance", "sagittal_balance"] },
 ];
 const HELP = {
@@ -79,6 +90,53 @@ function InputRow({ f, value, onChange }) {
         {out && <small className="err">Expected {f.min}–{f.max} {f.unit}</small>}
       </div>
       <div className="row-control">{control}</div>
+    </div>
+  );
+}
+
+function NumBox({ id, value, onChange, unit, step, min, max, invalid, label }) {
+  return (
+    <div className={`num-input${invalid ? " invalid" : ""}`}>
+      <input id={id} type="number" inputMode="decimal" step={step} min={min} max={max} aria-label={label}
+        placeholder="—" value={value} onChange={(e) => onChange(e.target.value)} />
+      <span className="suffix">{unit}</span>
+    </div>
+  );
+}
+
+function HeightRow({ values, onChange }) {
+  const ftBad = values.height_ft !== "" && (+values.height_ft < 1 || +values.height_ft > 7);
+  const inBad = values.height_in !== "" && (+values.height_in < 0 || +values.height_in >= 12);
+  return (
+    <div className="row">
+      <div className="row-label">
+        <label htmlFor="f-height_ft">Height</label>
+        <small>Used with weight to calculate BMI</small>
+        {(ftBad || inBad) && <small className="err">Expected 1–7 ft and 0–11 in</small>}
+      </div>
+      <div className="row-control pair">
+        <NumBox id="f-height_ft" label="Height, feet" unit="ft" step={1} min={1} max={7} value={values.height_ft} invalid={ftBad}
+          onChange={(v) => onChange("height_ft", v)} />
+        <NumBox id="f-height_in" label="Height, inches" unit="in" step={0.5} min={0} max={11.5} value={values.height_in} invalid={inBad}
+          onChange={(v) => onChange("height_in", v)} />
+      </div>
+    </div>
+  );
+}
+
+function WeightRow({ values, onChange, bmi }) {
+  const bad = values.weight_lb !== "" && (+values.weight_lb < 5 || +values.weight_lb > 400);
+  return (
+    <div className="row">
+      <div className="row-label">
+        <label htmlFor="f-weight_lb">Weight</label>
+        <small>{bmi != null ? `BMI ${bmi.toFixed(1)} kg/m² (calculated)` : "Pounds"}</small>
+        {bad && <small className="err">Expected 5–400 lb</small>}
+      </div>
+      <div className="row-control">
+        <NumBox id="f-weight_lb" label="Weight, pounds" unit="lb" step={0.1} min={5} max={400} value={values.weight_lb} invalid={bad}
+          onChange={(v) => onChange("weight_lb", v)} />
+      </div>
     </div>
   );
 }
@@ -315,7 +373,9 @@ export default function App() {
   const [plan, setPlan] = useState({ implant: "mcgr", traction: false, pelvis: false });
   const [tab, setTab] = useState("when");
   const onChange = (k, v) => setValues((s) => ({ ...s, [k]: v }));
-  const res = useMemo(() => classify(values), [values]);
+  const bmi = useMemo(() => bmiFrom(values), [values]);
+  const modelValues = useMemo(() => ({ ...values, bmi: bmi == null ? "" : bmi.toFixed(2) }), [values, bmi]);
+  const res = useMemo(() => classify(modelValues), [modelValues]);
   const S = strategyFromPlan(plan);
 
   return (
@@ -352,7 +412,9 @@ export default function App() {
               {GROUPS.map((g) => (
                 <fieldset key={g.title}>
                   <legend>{g.title}</legend>
-                  {g.keys.map((k) => <InputRow key={k} f={byKey[k]} value={values[k]} onChange={onChange} />)}
+                  {g.keys.map((k) => k === "height" ? <HeightRow key={k} values={values} onChange={onChange} />
+                    : k === "weight" ? <WeightRow key={k} values={values} onChange={onChange} bmi={bmi} />
+                    : <InputRow key={k} f={byKey[k]} value={values[k]} onChange={onChange} />)}
                 </fieldset>
               ))}
               <fieldset>
@@ -373,7 +435,7 @@ export default function App() {
 
           <div className="below">
             <Compare res={res} S={S} />
-            <Breakdown res={res} values={values} />
+            <Breakdown res={res} values={modelValues} />
           </div>
 
           <section className="about" id="about">
